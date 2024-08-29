@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "3.0.14", features = ["derive"] }
+
 rayon = "1.6"
+flate2 = "1.0"
+needletail = "0.4"  # Use the latest version available

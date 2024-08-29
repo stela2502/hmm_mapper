@@ -1,21 +1,49 @@
 //VDHmodeler.rs
 
 use crate::HMM::HMM;
-use bio::io::fastq;
+use crate::fasta_reader::{FastaRecord, FastaReader};
+//use needletail::Sequence;
+use std::collections::HashSet;
 
-
-pub enum LightChain{
-	V,
-	J
-}
-
-
-pub enum HeavyChain{
+pub enum Chain{
 	V,
 	D,
-	J
+	J,
 }
 
+impl Chain{
+	pub fn id(&self)->usize {
+		match self{
+			Chain::V => 1,
+			Chain::D => 2,
+			Chain::J => 3,
+		}
+	}
+
+	pub fn starts_at(&self, mode:&str, data:&Vec<usize>) -> usize{
+		match mode{
+			"HeavyChain" => {
+				match self{
+					Chain::V => 0,
+					Chain::D => data[0],
+					Chain::J => data[1],
+				}
+			},
+			"LightChain" => {
+				match self{
+					Chain::V => 0,
+					Chain::D => panic!("A light chain has no D segement!"),
+					Chain::J => data[0],
+					_ => unreachable!(),
+				}
+			},
+			_ => unreachable!(),
+		}
+	}
+}
+
+
+#[derive(Eq, Hash, PartialEq, Debug, Clone)]
 pub enum SequenceModel{
 	IGH,
 	IGL,
@@ -36,6 +64,7 @@ impl SequenceModel {
 			SequenceModel::TRB => 4,
 			SequenceModel::TRG => 5,
 			SequenceModel::TRD => 6,
+			_ => unreachable!(),
 		}
 	}
 
@@ -57,24 +86,50 @@ impl SequenceModel {
     }
 
 
-	pub fn have_data(&self, data:&Vec<usize> ) -> bool{
+	pub fn has_data(&self, data:&Vec<usize> ) -> bool{
 		match self {
-            SequenceModel::IGH(_) | SequenceModel::TRA(_) | SequenceModel::TRG(_) => {
+            SequenceModel::IGH| SequenceModel::TRA | SequenceModel::TRG => {
                 // Check for HeavyChain types
                 data[0] != 0 && data[1] != 0 && data[2] != 0
             },
-            SequenceModel::IGL(_) | SequenceModel::IGK(_) | SequenceModel::TRB(_) | SequenceModel::TRD(_) => {
+            SequenceModel::IGL | SequenceModel::IGK | SequenceModel::TRB | SequenceModel::TRD => {
                 // Check for LightChain types
                 data[0] != 0 && data[1] != 0
             },
+            _ => unreachable!(),
         }
+	}
+
+	pub fn name(&self) -> String{
+		match self{
+			SequenceModel::IGH => "IGH-VDJ".to_string(),
+			SequenceModel::IGL => "IGL-VDJ".to_string(),
+			SequenceModel::IGK => "IGK-VDJ".to_string(),
+			SequenceModel::TRA => "TRA-VDJ".to_string(),
+			SequenceModel::TRB => "TRB-VDJ".to_string(),
+			SequenceModel::TRG => "TRG-VDJ".to_string(),
+			SequenceModel::TRD => "TRD-VDJ".to_string(),
+			_ => unreachable!(),
+		}
+	}
+
+	pub fn starts_at(&self, chain:&Chain, data:&Vec<usize> ) -> usize{
+		match self{
+			SequenceModel::IGH | SequenceModel::TRA | SequenceModel::TRG => {
+				chain.starts_at( "HeavyChain", data) 
+			},
+			SequenceModel::IGL | SequenceModel::IGK | SequenceModel::TRB | SequenceModel::TRD => {
+				chain.starts_at( "LightChain", data)
+			},
+			_ => unreachable!(),
+		}
 	}
 
 }
 
 #[derive(Clone)]
-struct HMMcollector{
-	states:Vec<usize>
+pub struct HMMcollector{
+	pub states:Vec<usize>
 }
 
 
@@ -86,10 +141,10 @@ impl Default for HMMcollector{
     }
 }
 
-
+#[derive(Clone)]
 pub struct HMMmodel {
 	pub name:SequenceModel,
-	collector:Vec<HMMcollector>,
+	pub collector:Vec<HMMcollector>,
 }
 
 impl HMMmodel{
@@ -108,33 +163,130 @@ impl HMMmodel{
 		self.collector[pos].states[HMM::char2pos(value)] +=1;
 	}
 
+	pub fn consume(&mut self, model: SequenceModel, start_at:usize, seq:&str ) -> bool{
+		if model != self.name {
+			return false
+		}else {
+			if self.collector.len() < start_at + seq.len() {
+				panic!("Library was not initialized correctly - len {} is smaller than pos {}", self.collector.len(), start_at + seq.len() );
+			}
+			for (pos, value) in seq.chars().enumerate(){
+				self.collector[pos+start_at].states[HMM::char2pos(value)] +=1;
+			}
+			return true
+		}
+	}
+
 
 }
 
 
+pub struct VDJmodeler{
 
-pub fn build_models( fasta : String ) -> Vec<HMMmodel> {
+}
 
-	let reader = fastq::Reader::from_file(file_path).unwrap();
-    let mut sequences = Vec::new();
+impl VDJmodeler{
 
-    let full_matrix = vec[vec[0;3], SequenceModel.length()];
+pub fn identify_model_type(record: &str) -> Option<(SequenceModel, Chain)> {
+    let name = record.to_string();
 
-    for record in reader.records() {
-        let record = record.unwrap();
-        let seq = record.seq().to_owned();
-        if Some((ids)) = identify_model_type(&record.id().to_string()) {
-        	full_matrix[ ids.0.id()][ids.1.id() ] = full_matrix[ ids.0.id()][ids.1.id() ].max(seq.len());
-        	sequences.push( ( ids, seq) );
+    if name.contains("IGHV") {
+        return Some((SequenceModel::IGH, Chain::V));
+    } else if let Some(ighd_pos) = name.find("IGHD") {
+    	// Check if the 5th character after "IGHD" exists and is a digit
+    	name.chars()
+    		.nth(ighd_pos + 4)
+    		.filter(|&c| c.is_digit(10)) // will return None if not a digit
+            .map(|_| (SequenceModel::IGH, Chain::D)); {
+            return Some((SequenceModel::IGH, Chain::D));
         }
-    }
-    // check if we have sequences for all necessary parts for each of the SequenceModel(s)
-    let mut with_data: Vec<HMMmodel>;
-    for id in 1:full_matrix.len(){
-    	if SequenceModel::from_index(id).has_data( &full_matrix[id] ){
-    		
-    	}
+        // if no - the function will return None later on.
+    } else if name.contains("IGHJ") {
+        return Some((SequenceModel::IGH, Chain::J));
+    } else if name.contains("IGLV") {
+        return Some((SequenceModel::IGL, Chain::V));
+    } else if name.contains("IGLD") {
+        return Some((SequenceModel::IGL, Chain::D));
+    } else if name.contains("IGLJ") {
+        return Some((SequenceModel::IGL, Chain::J));
+    } else if name.contains("IGKV") {
+        return Some((SequenceModel::IGK, Chain::V));
+    } else if name.contains("IGKD") {
+        return Some((SequenceModel::IGK, Chain::D));
+    } else if name.contains("IGKJ") {
+        return Some((SequenceModel::IGK, Chain::J));
+    } else if name.contains("TRAV") {
+        return Some((SequenceModel::TRA, Chain::V));
+    } else if name.contains("TRAD") {
+        return Some((SequenceModel::TRA, Chain::D));
+    } else if name.contains("TRAJ") {
+        return Some((SequenceModel::TRA, Chain::J));
+    } else if name.contains("TRBV") {
+        return Some((SequenceModel::TRB, Chain::V));
+    } else if name.contains("TRBD") {
+        return Some((SequenceModel::TRB, Chain::D));
+    } else if name.contains("TRBJ") {
+        return Some((SequenceModel::TRB, Chain::J));
+    } else if name.contains("TRGV") {
+        return Some((SequenceModel::TRG, Chain::V));
+    } else if name.contains("TRGD") {
+        return Some((SequenceModel::TRG, Chain::D));
+    } else if name.contains("TRGJ") {
+        return Some((SequenceModel::TRG, Chain::J));
+    } else if name.contains("TRDV") {
+        return Some((SequenceModel::TRD, Chain::V));
+    } else if name.contains("TRDD") {
+        return Some((SequenceModel::TRD, Chain::D));
+    } else if name.contains("TRDJ") {
+        return Some((SequenceModel::TRD, Chain::J));
     }
 
-    sequences
+    None // If no match found, return None
+}
+
+	pub fn build_models( fasta : String ) -> HMM {
+
+		let mut reader = FastaReader::from_file(&fasta).expect("valid path/file");
+		let mut models: Vec::<Option<HMMmodel>> = vec![None; SequenceModel::length()];
+	    let mut sequences = Vec::new();
+
+	    let mut full_matrix = vec![vec![0;3]; SequenceModel::length()];
+
+	    while let Some(record) = reader.next() {
+	        let seq = &record.seq();
+	        let acc = &record.id();
+	        if let Some(ids) = VDJmodeler::identify_model_type( acc ) {
+	        	full_matrix[ ids.0.id()][ids.1.id() ] = full_matrix[ ids.0.id()][ids.1.id() ].max(seq.len());
+	        	sequences.push( ( ids, seq.to_string() ) );
+
+	        }
+	    }
+	    // check if we have sequences for all necessary parts for each of the SequenceModel(s)
+	    let mut with_data: HashSet<SequenceModel> = HashSet::new();
+	    for (id, data) in full_matrix.iter().enumerate(){
+	    	if SequenceModel::from_index(id).unwrap().has_data( data ){
+	    		let seq_mod = SequenceModel::from_index(id).unwrap();
+	    		with_data.insert(seq_mod.clone());
+	    		let  mut this = HMMmodel::new(seq_mod.clone(), data.iter().sum::<usize>() );
+	    		models[ seq_mod.id() ] = Some( this );
+	    	}
+	    }
+	    println!("we have found these sequences that can be modeled {:?}", with_data);
+	    for ((model, chain), seq) in &sequences {
+	    	if with_data.contains( model ) {
+	    		let model_id = model.id();
+	    		if let Some (hmm_model) = models[ model_id ].as_mut() {
+	    			hmm_model.consume( model.clone(),
+	    			 model.starts_at( chain, &full_matrix[model.id()] ), seq );
+	    		}
+	    	}
+	    }
+	    let good_models = models.into_iter()
+	        .filter_map(|model_option| model_option) // Filter out `None` values and unwrap `Some` values
+	        .collect();
+
+	    HMM::from_sequence_models( good_models )
+
+
+	}
 }
