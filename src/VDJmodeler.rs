@@ -1,8 +1,8 @@
 //VDHmodeler.rs
 
 use crate::HMM::HMM;
-use crate::fasta_reader::{FastaRecord, FastaReader};
-//use needletail::Sequence;
+//use crate::fasta_reader::{FastaRecord, FastaReader};
+use needletail::parse_fastx_file;
 use std::collections::HashSet;
 
 pub enum Chain{
@@ -14,9 +14,9 @@ pub enum Chain{
 impl Chain{
 	pub fn id(&self)->usize {
 		match self{
-			Chain::V => 1,
-			Chain::D => 2,
-			Chain::J => 3,
+			Chain::V => 0,
+			Chain::D => 1,
+			Chain::J => 2,
 		}
 	}
 
@@ -94,7 +94,7 @@ impl SequenceModel {
             },
             SequenceModel::IGL | SequenceModel::IGK | SequenceModel::TRB | SequenceModel::TRD => {
                 // Check for LightChain types
-                data[0] != 0 && data[1] != 0
+                data[0] != 0 && data[2] != 0
             },
             _ => unreachable!(),
         }
@@ -115,10 +115,10 @@ impl SequenceModel {
 
 	pub fn starts_at(&self, chain:&Chain, data:&Vec<usize> ) -> usize{
 		match self{
-			SequenceModel::IGH | SequenceModel::TRA | SequenceModel::TRG => {
+			SequenceModel::IGH | SequenceModel::TRB | SequenceModel::TRD => {
 				chain.starts_at( "HeavyChain", data) 
 			},
-			SequenceModel::IGL | SequenceModel::IGK | SequenceModel::TRB | SequenceModel::TRD => {
+			SequenceModel::IGL | SequenceModel::IGK | SequenceModel::TRA | SequenceModel::TRG => {
 				chain.starts_at( "LightChain", data)
 			},
 			_ => unreachable!(),
@@ -156,22 +156,25 @@ impl HMMmodel{
 		}
 	}
 
-	pub fn add (&mut self, pos:usize, value: char) {
+	/*pub fn add (&mut self, pos:usize, value: u8) {
 		if self.collector.len() < pos {
 			panic!("Library was not initialized correctly - len {} is smaller than pos {}", self.collector.len(), pos );
 		}
 		self.collector[pos].states[HMM::char2pos(value)] +=1;
-	}
+	}*/
 
-	pub fn consume(&mut self, model: SequenceModel, start_at:usize, seq:&str ) -> bool{
+	pub fn consume(&mut self, model: SequenceModel, start_at:usize, seq:&[u8] ) -> bool{
 		if model != self.name {
 			return false
 		}else {
 			if self.collector.len() < start_at + seq.len() {
 				panic!("Library was not initialized correctly - len {} is smaller than pos {}", self.collector.len(), start_at + seq.len() );
 			}
-			for (pos, value) in seq.chars().enumerate(){
-				self.collector[pos+start_at].states[HMM::char2pos(value)] +=1;
+			for (pos, value) in seq.iter().enumerate(){
+				for id in HMM::iupac_char2pos(*value){
+					self.collector[pos+start_at].states[ id ] +=1;
+				}
+				
 			}
 			return true
 		}
@@ -244,49 +247,67 @@ pub fn identify_model_type(record: &str) -> Option<(SequenceModel, Chain)> {
     None // If no match found, return None
 }
 
-	pub fn build_models( fasta : String ) -> HMM {
+	pub fn build_models(fasta: String) -> HMM {
 
-		let mut reader = FastaReader::from_file(&fasta).expect("valid path/file");
-		let mut models: Vec::<Option<HMMmodel>> = vec![None; SequenceModel::length()];
+		let mut reader = match parse_fastx_file(&fasta) {
+        	Ok(reader) => reader,
+        	Err(err) => {
+            	panic!("File {fasta} Read Error: {}", err);
+        	}
+   		};
+	    let mut models: Vec<Option<HMMmodel>> = vec![None; SequenceModel::length()];
 	    let mut sequences = Vec::new();
 
-	    let mut full_matrix = vec![vec![0;3]; SequenceModel::length()];
+	    // Initialize the full_matrix with the correct size
+	    let mut full_matrix = vec![vec![0; 3]; SequenceModel::length()];
 
+	    // Collect sequences and update the full_matrix with max lengths
 	    while let Some(record) = reader.next() {
-	        let seq = &record.seq();
-	        let acc = &record.id();
-	        if let Some(ids) = VDJmodeler::identify_model_type( acc ) {
-	        	full_matrix[ ids.0.id()][ids.1.id() ] = full_matrix[ ids.0.id()][ids.1.id() ].max(seq.len());
-	        	sequences.push( ( ids, seq.to_string() ) );
-
+	    	let read = match record{
+	                Ok( res ) => res,
+	                Err(err) => {
+	                    eprintln!("could not read from fasta:\n{err}");
+	                    continue
+	                }
+	            };
+	        let seq = read.seq().into_owned();
+	        let tmp = &read.id().to_owned();
+	        let acc = String::from_utf8_lossy(tmp);
+	        if let Some(ids) = VDJmodeler::identify_model_type(&acc) {
+	            let (model_id, chain_id) = ids;
+	            full_matrix[model_id.id()][chain_id.id()] = full_matrix[model_id.id()][chain_id.id()].max(seq.len());
+	            sequences.push(((model_id, chain_id), seq ));
 	        }
 	    }
-	    // check if we have sequences for all necessary parts for each of the SequenceModel(s)
+
+	    // Identify SequenceModels that have sufficient data
 	    let mut with_data: HashSet<SequenceModel> = HashSet::new();
-	    for (id, data) in full_matrix.iter().enumerate(){
-	    	if SequenceModel::from_index(id).unwrap().has_data( data ){
-	    		let seq_mod = SequenceModel::from_index(id).unwrap();
-	    		with_data.insert(seq_mod.clone());
-	    		let  mut this = HMMmodel::new(seq_mod.clone(), data.iter().sum::<usize>() );
-	    		models[ seq_mod.id() ] = Some( this );
-	    	}
+	    for (id, data) in full_matrix.iter().enumerate() {
+	        if let Some(seq_mod) = SequenceModel::from_index(id) {
+	            if seq_mod.has_data(data) {
+	                with_data.insert(seq_mod.clone());
+	                let mut hmm_model = HMMmodel::new(seq_mod.clone(), data.iter().sum());
+	                models[seq_mod.id()] = Some(hmm_model);
+	            }
+	        }
 	    }
-	    println!("we have found these sequences that can be modeled {:?}", with_data);
+	    println!("We have found these sequences that can be modeled: {:?}", with_data);
+
+	    // Populate the HMM models with sequence data
 	    for ((model, chain), seq) in &sequences {
-	    	if with_data.contains( model ) {
-	    		let model_id = model.id();
-	    		if let Some (hmm_model) = models[ model_id ].as_mut() {
-	    			hmm_model.consume( model.clone(),
-	    			 model.starts_at( chain, &full_matrix[model.id()] ), seq );
-	    		}
-	    	}
+	        if with_data.contains(model) {
+	            if let Some(hmm_model) = models[model.id()].as_mut() {
+	                hmm_model.consume(
+	                    model.clone(),
+	                    model.starts_at(chain, &full_matrix[model.id()]),
+	                    seq,
+	                );
+	            }
+	        }
 	    }
-	    let good_models = models.into_iter()
-	        .filter_map(|model_option| model_option) // Filter out `None` values and unwrap `Some` values
-	        .collect();
 
-	    HMM::from_sequence_models( good_models )
-
-
+	    // Collect and return the HMM models
+	    let good_models: Vec<HMMmodel> = models.into_iter().filter_map(|model| model).collect();
+	    HMM::from_sequence_models(good_models)
 	}
 }

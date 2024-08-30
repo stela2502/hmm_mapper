@@ -2,7 +2,8 @@
 // main.rs
 use hmm_mapper::HMM::{HMM}; // Import from lib.rs
 use hmm_mapper::VDJmodeler::VDJmodeler;
-use needletail::parser::FastqReader;
+use needletail::parse_fastx_file;
+
 use std::io::BufReader;
 
 use clap::Parser;
@@ -28,28 +29,40 @@ fn main() {
 
     println!("Initialized HMM with {} states.", hmm.states().len());
 
-    let reader = BufReader::new(opts.fastq);
-
-    // Create a FastqReader from the buffered reader
-    let mut fastq_reader = FastqReader::new(reader);
+    let mut reader = match parse_fastx_file(&opts.fastq) {
+        Ok(reader) => reader,
+        Err(err) => {
+            panic!("File {} Read Error: {}",&opts.fastq, err);
+        }
+    };
 
      // Iterate over the records
-    for record in fastq_reader.records() {
-        match record {
-            Ok(rec) => {
-                // Process the record
-                let id = rec.id();
-                let sequence = rec.seq();
-                let quality = rec.qual();
-
-                println!("ID: {}", id);
-                println!("Sequence: {}", std::str::from_utf8(sequence).unwrap());
-                println!("Quality: {}", std::str::from_utf8(quality).unwrap());
+    while let Some(record) = reader.next() {
+        let read = match record{
+            Ok( res ) => {
+                if let Some( hmm_result ) = hmm.forward_algorithm(&res.seq()){
+                    //if hmm_result.iter().take(hmm_result.len() - 1).any(|x| x.1 < 1e-08){
+                        /*println!( "This {:?} is what the HMM tells me for \n{:?}\n{:?}",
+                            hmm_result,
+                            String::from_utf8_lossy( &res.id() ),
+                            String::from_utf8_lossy( &res.seq() ),
+                        );*/
+                        println!( ">{}\n{}", 
+                            String::from_utf8_lossy( &res.id() ),
+                            String::from_utf8_lossy( &res.seq() ),
+                            );
+                    //}
+                    
+                }/*else {
+                    eprintln!("Couln not read this sequence: {}",String::from_utf8_lossy( &res.seq() ) )
+                }*/
+                
+            },
+            Err(err) => {
+                eprintln!("could not read from fasta:\n{err}");
+                continue
             }
-            Err(e) => {
-                eprintln!("Error reading FASTQ record: {}", e);
-            }
-        }
+        };
     }
 
 }

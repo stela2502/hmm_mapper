@@ -2,7 +2,11 @@
 
 use crate::VDJmodeler::SequenceModel;
 use crate::VDJmodeler::HMMmodel;
- use crate::VDJmodeler::HMMcollector;
+use crate::VDJmodeler::HMMcollector;
+use std::collections::HashSet;
+use std::collections::HashMap;
+
+use std::f64;
 
 pub struct HMMState {
     pub match_emission: Vec<Vec<f64>>,    // Probabilities for A, G, C, T, and `.`
@@ -10,57 +14,6 @@ pub struct HMMState {
 
 impl HMMState {
 
-    /*
-    // Method to get the index of the maximum emission probability
-    pub fn max_emission(&self) -> f64 {
-        let mut max_value = self.match_emission[0];
-
-        // Find the maximum in match_emission
-        for &value in &self.match_emission {
-            if value > max_value {
-                max_value = value;
-            }
-        }
-
-        max_value
-    }
-    // Method to get the index of the maximum emission probability
-    pub fn max_emission_index(&self) -> usize {
-        let mut max_index = 0;
-        let mut max_value = self.match_emission[0];
-
-        // Find the maximum in match_emission
-        for (i, &value) in self.match_emission.iter().enumerate() {
-            if value > max_value {
-                max_value = value;
-                max_index = i;
-            }
-        }
-
-        // Check if there is a higher value in insertion_emission
-        for (i, &value) in self.insertion_emission.iter().enumerate() {
-            if value > max_value {
-                max_value = value;
-                max_index = i; // Offset by 5 to differentiate from match_emission indices
-            }
-        }
-
-        max_index
-    }
-
-    // Method to get the index of the maximum emission probability
-    pub fn emission_index_for(&self, value: &f64) -> usize {
-
-
-        // Find the maximum in match_emission
-        for (i, &mine) in self.match_emission.iter().enumerate() {
-            if mine == *value {
-                return i
-            }
-        }
-        panic!("The value {value} is not in my list!");
-    }
-    */
     fn adjust_zero_probabilities(probabilities: &mut [f64], min_prob: f64) {
         for prob in probabilities.iter_mut() {
             if *prob == 0.0 {
@@ -75,6 +28,18 @@ impl HMMState {
                 *prob /= total;
             }
         }
+    }
+
+    pub fn prob_for_pos(&self, pos:usize) -> Vec<f64> {
+        let mut ret = Vec::<f64>::with_capacity(self.match_emission.len());
+        for emissions in &self.match_emission {
+            ret.push (*emissions.get(pos).unwrap_or( &0.00001 ));
+        }
+        ret
+    }
+
+    pub fn len(&self) -> usize {
+        self.match_emission.len()
     }
 
     // Normalize match emission probabilities based on a list of HMMcollectors
@@ -105,6 +70,7 @@ impl HMMState {
             match_emission,
         }
     }
+
 
 }
 
@@ -153,63 +119,222 @@ impl HMM {
     }
 
     /// translate the sequence into the correct position in the data
-    pub fn char2pos( seq: char) -> usize{
-        match seq {
-            'A' => 0,
-            'G' => 1,
-            'C' => 2,
-            'T' => 3,
-            '.' => 4,
-            _ => unreachable!()
+    pub fn char2pos( seq: u8) -> Option<usize>{
+        match seq.to_ascii_uppercase() {
+            b'A' => Some(0),
+            b'G' => Some(1),
+            b'C' => Some(2),
+            b'T' => Some(3),
+            other => {
+                //eprintln!("Sorry I can not decode this char {}",other as char );
+                None
+            },
         }
     }
+
+    pub fn iupac_char2pos(seq: u8) -> Vec<usize> {
+    match seq.to_ascii_uppercase() {
+        b'A' => vec![0],        // A or a
+        b'G' => vec![1],        // G or g
+        b'C' => vec![2],        // C or c
+        b'T' => vec![3],        // T or t
+        b'.' => vec![0, 1, 2, 3],        // . (gap)
+        b'N' => vec![0, 1, 2, 3], // N or n
+        b'R' => vec![0, 1],     // R or r
+        b'Y' => vec![2, 3],     // Y or y
+        b'W' => vec![0, 3],     // W or w
+        b'S' => vec![1, 2],     // S or s
+        b'K' => vec![1, 3],     // K or k
+        b'M' => vec![0, 2],     // M or m
+        b'B' => vec![1, 2, 3],  // B or b
+        b'D' => vec![0, 1, 3],  // D or d
+        b'H' => vec![0, 2, 3],  // H or h
+        b'V' => vec![0, 1, 2],  // V or v
+        other => panic!("Sorry, I cannot decode this char: {}", other as char),
+    }
+}
 
     pub fn states( &self ) -> &Vec<HMMState>{
         &self.states
     }
 
-    /// Forward algorithm
-    /// The only thing I really need from this as I 'only' want to check if any of the sequences
-    /// would be of a VDJ recombination evet.
-    pub fn forward_algorithm(&self, sequence: &str) -> Vec<(String, f64)> {
-        let num_states = self.states.len();
-        let sequence_length = sequence.len();
+    fn try_start_at(&self, sequence: &[u8], pos: usize) -> Option<Vec<f64>> {
+        // Initialize the return vector with zeros
+        let mut ret = vec![0.0; self.states[0].match_emission.len()];
 
-        let mut alpha = vec![vec![0.0; num_states]; sequence_length];
-
-        // Initialize the alpha values for the first position
-        for state in 0..num_states {
-            let emission_prob = &self.states[0].match_emission[Self::char2pos(sequence.chars().nth(0).unwrap()) ];
-            alpha[0][state] = emission_prob[state];
-        }
-
-        // Recursively compute the alpha values for the rest of the sequence
-        for t in 1..sequence_length {
-            for j in 0..num_states {
-                alpha[t][j] = 0.0;
-                for i in 0..num_states {
-                    alpha[t][j] += alpha[t - 1][i] * self.transition_matrix[i][j];
+        // Iterate over the sequence
+        for t in 0..sequence.len() {
+            let seq_id = match HMM::char2pos(sequence[t]) {
+                Some(id) => id,
+                None => {
+                    // Return a vector of zeros if there's an invalid character
+                    return None
                 }
-                let emission_prob = &self.states[t].match_emission[Self::char2pos(sequence.chars().nth(t).unwrap()) ];
-                alpha[t][j] *= emission_prob[j];
+            };
+
+            // Accumulate probabilities into ret
+            let prob_for_pos = self.states[t+pos].prob_for_pos(seq_id);
+
+            // Ensure the lengths match before adding
+            if prob_for_pos.len() != ret.len() {
+                //eprintln!("Warning: Length mismatch between probability vector and return vector at position {} with start {pos}", t+pos );
+                return None
+            }
+
+            // Perform element-wise addition
+            for (ret_val, prob_val) in ret.iter_mut().zip(prob_for_pos.iter()) {
+                *ret_val += prob_val;
             }
         }
 
-        // Get the final probabilities from the last position in the alpha matrix
-        let final_probabilities: Vec<f64> = alpha[sequence_length - 1].clone();
+        Some(ret)
+    }
 
-        // Compute the final probability
-        let total_prob: f64 = final_probabilities.iter().sum();
+    pub fn find_probable_start(&self, sequence: &[u8]) -> Vec<(usize, f64)> {
+        let num_states = self.states[0].len();
+        let mut stats_vec = vec![0.0; num_states];
+        let mut pos_vec = vec![0; num_states];
+
+        // Ensure that sequence length is not greater than the number of positions available
+        let max_start_pos = self.states.len().saturating_sub(sequence.len());
+
+        for t in 0..max_start_pos {
+            let current_probs = match self.try_start_at(sequence, t){
+                Some(ret) => ret,
+                None => {
+                    //out of data in the model;
+                    break;
+                }
+            };
+
+            for (id, value) in current_probs.iter().enumerate() {
+                if stats_vec[id] < *value {
+                    stats_vec[id] = *value;
+                    pos_vec[id] = t;
+                }
+            }
+        }
+
+        // Combine pos_vec and stats_vec into a Vec<(usize, f64)>
+
+        for i in 0..stats_vec.len(){
+            stats_vec[i] =  stats_vec[i] / sequence.len() as f64;
+        }
+        pos_vec.into_iter()
+            .zip(stats_vec.into_iter())
+            .collect()
+        
+    }
+
+    /// Forward algorithm
+    /// The only thing I really need from this as I 'only' want to check if any of the sequences
+    /// would be of a VDJ recombination evet.
+    pub fn forward_algorithm(&self, sequence: &[u8]) -> Option< Vec<(String, f64)> > {
+        
+
+        let probable_start_values = self.find_probable_start( sequence );
+
+        let mut start_values:HashSet<usize> = HashSet::new();
+        for  (pos, stat ) in &probable_start_values{
+            if stat > &0.3 {
+                start_values.insert( *pos);
+            }
+        }
+
+        //let start_values:Vec<usize> = probable_start_values.iter().filter_map(|x| { if x.1 > 0.3{ Some( x.0 ) }else { None} }).collect();
+
+        if start_values.len() == 0 {
+            return None
+        }
+        //println!("Using these probable_start_values {probable_start_values:?}\nI find these probable start positions: {start_values:?}");
+
+        let mut data: Vec<Option<Vec<(String, f64)>>> = vec![];
+        for start in start_values {
+            let this = self.forward_algorithm_pos( sequence, start );
+            data.push( this );
+        }
+
+        Some(HMM::collapse_to_max( data ))
+    }
+
+    fn collapse_to_max(data: Vec<Option<Vec<(String, f64)>>> ) -> Vec<(String, f64)> {
+        let mut max_values: HashMap<String, f64> = HashMap::new();
+
+        for item in data {
+            if let Some(stats) = item {
+                for (key, value) in stats {
+                    // Update the max value for each key
+                    max_values.entry(key)
+                        .and_modify(|e| *e = (*e).max(value))
+                        .or_insert(value);
+                }
+            }
+        }
+
+        // Convert the HashMap back to a Vec<(String, f64)>
+        max_values.into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    pub fn forward_algorithm_pos(&self, sequence: &[u8], start:usize) -> Option<Vec<(String, f64)>> {
+
+        let num_states = self.states[0].len();
+        let mut sequence_length = sequence.len();
+
+        // do we have enough info in the model to do this:
+        let this_end = self.states.len().min(start + sequence_length );
+
+        if start > this_end {
+            return None
+        }
+
+        let mut alpha = vec![vec![-f64::INFINITY; num_states]; sequence_length];
+        // Initialize the alpha values for the first position
+
+        let first_pos = match Self::char2pos(sequence[0]){
+            Some(pos) => pos,
+            None => {
+                //eprintln!("Bad sequence:")
+                return None
+            }
+        };
+
+        for (state, emission_prob) in self.states[start].prob_for_pos( first_pos ).iter().enumerate(){
+             alpha[0][state] = emission_prob.ln();
+        }
+
+
+        // Recursively compute the alpha values for the rest of the sequence
+        'main: for t in start+1..this_end {
+            let current_pos = match Self::char2pos(sequence[t-start]){
+                Some(pos) => pos,
+                None => return None,
+            };
+            for (state, emission_prob) in self.states[t].prob_for_pos( current_pos ).iter().enumerate(){
+                let mut max_log = -f64::INFINITY;
+                for i in 0..num_states {
+                    max_log = max_log.max(alpha[t - 1-start][i] + self.transition_matrix[i][state].ln());
+                }
+                alpha[t-start][state] = max_log + emission_prob.ln();
+            }
+
+        }
+        sequence_length = this_end - start;
+        // Compute the final probability in log-space
+        let final_probabilities: Vec<f64> = alpha[sequence_length - 1].clone();
+        let max_final_prob = final_probabilities.iter().cloned().fold(-f64::INFINITY, f64::max);
+        let total_prob = (max_final_prob).exp() ;
 
         // Pair the names with their corresponding probabilities
         let mut result: Vec<(String, f64)> = self.names.iter()
             .zip(final_probabilities.iter())
-            .map(|(name, &prob)| (name.name(), prob))
+            .map(|(name, &prob)| (name.name(), (prob - max_final_prob).exp()))
             .collect();
         // Add the total probability as the last entry
-        result.push(("Total".to_string(), total_prob));
+        //result.push(("Total".to_string(), total_prob));
 
-        result
+        Some(result)
     }
 
     /*
