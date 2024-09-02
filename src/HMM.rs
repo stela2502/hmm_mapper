@@ -138,7 +138,7 @@ impl HMM {
         b'G' => vec![1],        // G or g
         b'C' => vec![2],        // C or c
         b'T' => vec![3],        // T or t
-        b'.' => vec![0, 1, 2, 3],        // . (gap)
+        b'.' => vec![],        // . (gap)
         b'N' => vec![0, 1, 2, 3], // N or n
         b'R' => vec![0, 1],     // R or r
         b'Y' => vec![2, 3],     // Y or y
@@ -249,32 +249,41 @@ impl HMM {
         //println!("Using these probable_start_values {probable_start_values:?}\nI find these probable start positions: {start_values:?}");
 
         let mut data: Vec<Option<Vec<(String, f64)>>> = vec![];
-        for start in start_values {
-            let this = self.forward_algorithm_pos( sequence, start );
+        for start in &start_values {
+            let this = self.forward_algorithm_pos( sequence, *start );
             data.push( this );
         }
 
-        Some(HMM::collapse_to_max( data ))
+        Some(HMM::collapse_to_max( start_values, data ))
     }
 
-    fn collapse_to_max(data: Vec<Option<Vec<(String, f64)>>> ) -> Vec<(String, f64)> {
-        let mut max_values: HashMap<String, f64> = HashMap::new();
+    fn collapse_to_max(start_values: HashSet<usize>, data: Vec<Option<Vec<(String, f64)>>>) 
+        -> Vec<(String, f64)> {
+        let mut max_values: HashMap<String, (f64, usize)> = HashMap::new();
 
-        for item in data {
-            if let Some(stats) = item {
+        for (opt_stats, start) in data.into_iter().zip(start_values) {
+            if let Some(stats) = opt_stats {
                 for (key, value) in stats {
                     // Update the max value for each key
                     max_values.entry(key)
-                        .and_modify(|e| *e = (*e).max(value))
-                        .or_insert(value);
+                        .and_modify(|e| {
+                            if value > e.0 {
+                                e.0 = value;
+                                e.1 = start;
+                            }
+                        })
+                        .or_insert((value, start));
                 }
             }
         }
 
         // Convert the HashMap back to a Vec<(String, f64)>
-        max_values.into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect()
+        let res = max_values.into_iter()
+            .map(|(key, (value, start))| (format!("{}|{}", key, start), value))
+            .collect();
+
+        //println!("Stats result: {:?}", res);
+        res
     }
 
     pub fn forward_algorithm_pos(&self, sequence: &[u8], start:usize) -> Option<Vec<(String, f64)>> {

@@ -1,5 +1,13 @@
 # hmm_mapper
 
+**STOP USELESS!!!**
+
+This program was fun to try - but the results of this are JUST UNUSABLE!
+It does not find anythig interesting and I blame my failure to see this on IGblast to find IG genes in almost all reads :-D
+
+
+# And this is what I wrote before (assuming it would work):
+
 **hmm_mapper** is a tool designed to detect VDJ recombination events in DNA sequences using Hidden Markov Models (HMMs). While it is a work in progress, it aims to be a valuable component for mapping and analyzing VDJ sequences.
 
 ## What It Does

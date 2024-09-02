@@ -61,7 +61,7 @@ fn main() {
 
     println!("Initialized HMM with {} states.", hmm.states().len());
 
-    let fasta_path = "output.fasta";
+    let fasta_path = &opts.outfile;
     let fasta_file = File::create(fasta_path).expect("Unable to create FASTA file");
     let mut fasta_writer = BufWriter::new(fasta_file);
 
@@ -106,27 +106,33 @@ fn main() {
 
 fn process_batch(batch: &[Seqrec], hmm: &HMM, fasta_writer: &mut BufWriter<File>) {
     let chunk_size = 100;
-    let results: Vec<String> = batch
+    let results : Vec<Vec<String>> = batch
     .par_chunks(chunk_size) // Specify the chunk size, e.g., 100 or another appropriate value
-    .filter_map(|chunk| {
-        chunk.iter().filter_map(|record| {
+    .map(|chunk| {
+        let mut result = Vec::<String>::with_capacity(chunk_size);
+        for record in chunk.iter() {
             let seq = record.seq();
             if let Some(hmm_result) = hmm.forward_algorithm(&seq) {
 
-                let id = String::from_utf8_lossy(&record.id());
+                let id = String::from_utf8_lossy(&record.id()).to_string() + &format!("{:?}", hmm_result);
                 let seq_str = String::from_utf8_lossy(&seq);
                 let fasta_entry = format!(">{}\n{}\n", id, seq_str);
-                Some(fasta_entry)
-            } else {
-                None
+                result.push( fasta_entry );
             }
-        })
+        }
+        return result
     })
     .collect();
 
-    for result in results {
-        writeln!(fasta_writer, "{:?}", result).expect("Failed to write to FASTA file");
+    let mut it = 0;
+    for result_vec in results {
+        it += result_vec.len();
+        for result in &result_vec{
+            //println!( "{:?}", result);
+            write!(fasta_writer, "{}", result).expect("Failed to write to FASTA file");
+        }
     }
+    println!("Batch processed -> {it} potential VDJ reads found.");
 }
 
 /*fn main() {
