@@ -1,3 +1,4 @@
+[![Rust](https://github.com/stela2502/hmm_mapper/actions/workflows/rust.yml/badge.svg)](https://github.com/stela2502/hmm_mapper/actions/workflows/rust.yml)
 # hmm_mapper
 
 **STOP USELESS!!!**

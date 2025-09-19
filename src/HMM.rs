@@ -229,7 +229,7 @@ impl HMM {
     /// Forward algorithm
     /// The only thing I really need from this as I 'only' want to check if any of the sequences
     /// would be of a VDJ recombination evet.
-    pub fn forward_algorithm(&self, sequence: &[u8]) -> Option< Vec<(String, f64)> > {
+    pub fn forward_algorithm(&self, sequence: &[u8], cutoff: f64) -> Option< Vec<(String, f64)> > {
         
 
         let probable_start_values = self.find_probable_start( sequence );
@@ -253,11 +253,16 @@ impl HMM {
             let this = self.forward_algorithm_pos( sequence, *start );
             data.push( this );
         }
-
-        Some(HMM::collapse_to_max( start_values, data ))
+        let res = HMM::collapse_to_max( start_values, data, cutoff );
+        if res.is_empty(){
+            None
+        }else {
+            Some(res)
+        }
+        
     }
 
-    fn collapse_to_max(start_values: HashSet<usize>, data: Vec<Option<Vec<(String, f64)>>>) 
+    fn collapse_to_max(start_values: HashSet<usize>, data: Vec<Option<Vec<(String, f64)>>>, cutoff:f64) 
         -> Vec<(String, f64)> {
         let mut max_values: HashMap<String, (f64, usize)> = HashMap::new();
 
@@ -265,14 +270,16 @@ impl HMM {
             if let Some(stats) = opt_stats {
                 for (key, value) in stats {
                     // Update the max value for each key
+                    if value < cutoff{
                     max_values.entry(key)
                         .and_modify(|e| {
-                            if value > e.0 {
+                            if value < e.0 {
                                 e.0 = value;
                                 e.1 = start;
                             }
                         })
                         .or_insert((value, start));
+                    }
                 }
             }
         }
@@ -286,7 +293,7 @@ impl HMM {
         res
     }
 
-    pub fn forward_algorithm_pos(&self, sequence: &[u8], start:usize) -> Option<Vec<(String, f64)>> {
+    pub fn forward_algorithm_pos(&self, sequence: &[u8], start:usize ) -> Option<Vec<(String, f64)>> {
 
         let num_states = self.states[0].len();
         let mut sequence_length = sequence.len();

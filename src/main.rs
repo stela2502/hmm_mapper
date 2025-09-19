@@ -52,6 +52,9 @@ struct Opts {
     /// the fasta formated outfile with likely VDJ recombination evens
     #[clap(short, long)]
     outfile: String,
+    /// show reads that have a possibility below this cutoff
+    #[clap(short, long)]
+    cutoff: f64,
 }
 
 fn main() {
@@ -86,7 +89,7 @@ fn main() {
 
                 if batch.len() >= chunk_size {
                     // Process the current batch
-                    process_batch(&batch, &hmm, &mut fasta_writer);
+                    process_batch(&batch, &hmm, &mut fasta_writer, &opts.cutoff);
                     batch.clear(); // Clear the batch for the next set of records
                 }
             }
@@ -98,13 +101,13 @@ fn main() {
 
     // Process any remaining records in the batch
     if !batch.is_empty() {
-        process_batch(&batch, &hmm, &mut fasta_writer);
+        process_batch(&batch, &hmm, &mut fasta_writer, &opts.cutoff);
     }
 
     println!("Processing completed. Results written to {}", fasta_path);
 }
 
-fn process_batch(batch: &[Seqrec], hmm: &HMM, fasta_writer: &mut BufWriter<File>) {
+fn process_batch(batch: &[Seqrec], hmm: &HMM, fasta_writer: &mut BufWriter<File>, cutoff:&f64) {
     let chunk_size = 100;
     let results : Vec<Vec<String>> = batch
     .par_chunks(chunk_size) // Specify the chunk size, e.g., 100 or another appropriate value
@@ -112,7 +115,7 @@ fn process_batch(batch: &[Seqrec], hmm: &HMM, fasta_writer: &mut BufWriter<File>
         let mut result = Vec::<String>::with_capacity(chunk_size);
         for record in chunk.iter() {
             let seq = record.seq();
-            if let Some(hmm_result) = hmm.forward_algorithm(&seq) {
+            if let Some(hmm_result) = hmm.forward_algorithm(&seq, *cutoff) {
 
                 let id = String::from_utf8_lossy(&record.id()).to_string() + &format!("{:?}", hmm_result);
                 let seq_str = String::from_utf8_lossy(&seq);
